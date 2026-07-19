@@ -1,0 +1,93 @@
+Cell 1:
+
+(No results. Just installing libraries)
+
+Cell 2:
+
+flight_data.csv(text/csv) - 2029852 bytes, last modified: 7/18/2026 - 100% done
+Saving flight_data.csv to flight_data.csv
+72,000 samples | 20.0 min mission
+thrust: 0.0 to 22.0 N
+segments: ['takeoff', 'climb', 'hover', 'cruise', 'maneuver', 'cruise2', 'hover2', 'landing']
+
+Cell 3: 
+           cycles  max_range_N
+set                          
+climb       93.5          2.4
+cruise    2887.0          6.1
+cruise2   2031.5         12.7
+hover      258.0          8.2
+hover2      87.5         10.5
+landing     39.5         15.3
+maneuver   536.0         12.6
+takeoff     13.5         15.6
+
+cell 4:
+
+     set  case  F_min_N  F_max_N  cycles_per_flight  cycles_n
+ takeoff     1     7.54     8.72               13.0   39000.0
+ takeoff     3     0.00    15.60                0.5    1500.0
+   climb     1    13.53    14.75               67.5  202500.0
+   climb     2    13.29    14.99               19.5   58500.0
+   climb     3    13.00    15.14                6.5   19500.0
+   hover     1    11.66    12.85              257.0  771000.0
+   hover     3    11.32    19.45                1.0    3000.0
+  cruise     1    11.53    12.98             2753.0 8259000.0
+  cruise     2    10.75    13.75              115.5  346500.0
+  cruise     3     9.80    14.77               18.5   55500.0
+maneuver     1    11.59    13.01              472.5 1417500.0
+maneuver     2     9.79    14.73                1.0    3000.0
+maneuver     3     6.89    17.67               62.5  187500.0
+ cruise2     1    11.54    13.08             2024.0 6072000.0
+ cruise2     2     9.74    14.82                5.5   16500.0
+ cruise2     3     9.51    21.29                2.0    6000.0
+  hover2     1    11.67    12.86               86.5  259500.0
+  hover2     3    11.41    21.86                1.0    3000.0
+ landing     1    10.39    11.72               39.0  117000.0
+ landing     3     0.00    15.32                0.5    1500.0
+
+Cell 5:
+
+(No data to show. Only confirmation message of data being successfully downloaded)
+
+Cell 6:
+
+(No data to show. only confirmation that all iterations have completed)
+
+Cell 7:
+
+     set  case  F_min_N  F_max_N  cycles_n     R  Seq_ksi  Nf  damage
+ takeoff     1    7.541    8.721   39000.0 0.865    0.103 inf     0.0
+ takeoff     3    0.000   15.600    1500.0 0.000    0.638 inf     0.0
+   climb     1   13.533   14.753  202500.0 0.917    0.129 inf     0.0
+   climb     2   13.294   14.985   58500.0 0.887    0.159 inf     0.0
+   climb     3   12.997   15.141   19500.0 0.858    0.184 inf     0.0
+   hover     1   11.661   12.853  771000.0 0.907    0.120 inf     0.0
+   hover     3   11.318   19.452    3000.0 0.582    0.464 inf     0.0
+  cruise     1   11.530   12.983 8259000.0 0.888    0.137 inf     0.0
+  cruise     2   10.751   13.750  346500.0 0.782    0.219 inf     0.0
+  cruise     3    9.804   14.769   55500.0 0.664    0.307 inf     0.0
+maneuver     1   11.590   13.006 1417500.0 0.891    0.135 inf     0.0
+maneuver     2    9.785   14.728    3000.0 0.664    0.306 inf     0.0
+maneuver     3    6.886   17.669  187500.0 0.390    0.532 inf     0.0
+ cruise2     1   11.535   13.084 6072000.0 0.882    0.143 inf     0.0
+ cruise2     2    9.739   14.820   16500.0 0.657    0.312 inf     0.0
+ cruise2     3    9.505   21.288    6000.0 0.447    0.604 inf     0.0
+  hover2     1   11.675   12.864  259500.0 0.908    0.120 inf     0.0
+  hover2     3   11.408   21.861    3000.0 0.522    0.566 inf     0.0
+ landing     1   10.389   11.716  117000.0 0.887    0.124 inf     0.0
+ landing     3    0.000   15.318    1500.0 0.000    0.627 inf     0.0
+
+Cell 8:
+
+====================================================
+Cumulative Miner damage (one design life): D = 0.0000e+00
+Service life: infinite — all stresses below fatigue threshold.
+
+Damage drivers:
+Empty DataFrame
+Columns: [set, case, Seq_ksi, cycles_n, damage, pct_of_D]
+Index: []
+
+
+Cell 8's output is blank because there was no damage accumulated, therefore, infinite life.
