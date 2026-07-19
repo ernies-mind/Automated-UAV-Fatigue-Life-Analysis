@@ -11,17 +11,17 @@ This pipeline automates the whole chain. Change the geometry or mission, rerun o
 
 How It Works:
 
-Flight telemetry (synthetic)                  From test stand data or UAV telemetry
+Flight telemetry (synthetic)  [From test stand data or UAV telemetry]
 
-Rainflow cycle counting                       ASTM E1049, per flight segment
-
-
-Fatigue load spectrum                         Set / Case / F_min / F_max / cycles
+Rainflow cycle counting                       [ASTM E1049, per flight segment]
 
 
-Automated FEA                                 Python templates the CalculiX deck, runs the solver, parses σ₁ per case
+Fatigue load spectrum                         [Set / Case / F_min / F_max / cycles]
+
+
+Automated FEA                                 [Python templates the CalculiX deck, runs the solver, parses σ₁ per case]
         
-S-N curve + mean stress correction            MMPDS, 7075-T6
+S-N curve + mean stress correction           [MMPDS, 7075-T6]
 
 
 Miner's Rule damage summation                 D = Σ(n/N) → Service life = 1/D
