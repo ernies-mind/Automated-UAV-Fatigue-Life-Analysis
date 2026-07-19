@@ -16,9 +16,7 @@ Flight telemetry (synthetic)          From test stand data or UAV telemetry
 Rainflow cycle counting               ASTM E1049, per flight segment
         ↓
 Fatigue load spectrum                 Set / Case / F_min / F_max / cycles
-
         ↓
-        
 Automated FEA                         Python templates the CalculiX deck,
         ↓                             runs the solver, parses σ₁ per case
         
