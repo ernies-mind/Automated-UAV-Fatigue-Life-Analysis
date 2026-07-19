@@ -1,0 +1,283 @@
+# ============================================================
+# CELL 1 — Environment setup
+# Installs: rainflow (cycle counting), CalculiX (FEA solver)
+# ============================================================
+!pip install -q rainflow
+!apt-get install -y -q calculix-ccx > /dev/null
+
+# Core libraries
+import os, re, shutil, subprocess     # file handling + running the solver
+import numpy as np                    # math
+import pandas as pd                   # DataFrame spine of the pipeline
+import matplotlib.pyplot as plt       # plots
+import rainflow                       # ASTM cycle counting
+
+# Solver threading + version check (confirms install worked)
+os.environ["OMP_NUM_THREADS"] = "2"
+!ccx -v
+
+# ============================================================
+# CELL 2 — Import flight data
+# Input: flight_data.csv from mission_generator.py
+# Columns: time_s, thrust_N, moment_Nm, segment
+# ============================================================
+from google.colab import files
+up = files.upload()                              # upload flight_data.csv
+
+flight = pd.read_csv("flight_data.csv")
+
+# Sanity checks: shape, load range, segments present
+print(f"{len(flight):,} samples | {flight.time_s.iloc[-1]/60:.1f} min mission")
+print(f"thrust: {flight.thrust_N.min():.1f} to {flight.thrust_N.max():.1f} N")
+print(f"segments: {flight.segment.unique().tolist()}")
+
+# Quick visual check of the load history
+plt.figure(figsize=(12, 3))
+plt.plot(flight.time_s / 60, flight.thrust_N, lw=0.4)
+plt.xlabel("Time (min)"); plt.ylabel("Thrust (N)")
+plt.title("Imported Flight Load History")
+plt.show()
+
+# ============================================================
+# CELL 3 — Rainflow cycle counting
+# Counts load cycles per flight segment (ASTM E1049).
+# Output: cycles DataFrame -> columns: set, range_N, mean_N, count
+# ============================================================
+NOISE_GATE_N = 1.0        # ignore cycles smaller than this range (noise dither)
+
+rows = []
+for set_name, grp in flight.groupby("segment", sort=False):
+    # extract_cycles yields: (range, mean, count, i_start, i_end)
+    for rng, mean, count, *_ in rainflow.extract_cycles(grp.thrust_N.to_numpy()):
+        if rng >= NOISE_GATE_N:
+            rows.append({"set": set_name, "range_N": rng, "mean_N": mean, "count": count})
+
+cycles = pd.DataFrame(rows)
+
+# Summary: cycle content per set
+summary = cycles.groupby("set").agg(
+    cycles=("count", "sum"),
+    max_range_N=("range_N", "max"),
+).round(1)
+print(summary)
+
+# Rainflow histogram: how many cycles at each load range
+plt.figure(figsize=(10, 3))
+plt.hist(cycles.range_N, bins=30, weights=cycles["count"], color="steelblue")
+plt.yscale("log")
+plt.xlabel("Cycle Range (N)"); plt.ylabel("Cycles (log)")
+plt.title("Rainflow Cycle Distribution — One Mission")
+plt.show()
+
+# ============================================================
+# CELL 4 — Build fatigue load spectrum
+# Bins each set's cycles into load cases (by cycle range),
+# scales one mission to the full design life.
+# Output: spectrum DataFrame -> fatigue_spectrum.csv
+# ============================================================
+FLIGHTS_PER_LIFE = 3000      # missions per design life (~1000 hr at 20 min)
+CASES_PER_SET    = 3         # max load cases per set
+
+rows = []
+for set_name, grp in cycles.groupby("set", sort=False):
+    rng, mean, cnt = grp.range_N.values, grp.mean_N.values, grp["count"].values
+
+    # Bin by cycle range into up to CASES_PER_SET cases
+    edges = np.linspace(rng.min(), rng.max() + 1e-9, CASES_PER_SET + 1)
+    for k in range(CASES_PER_SET):
+        m = (rng >= edges[k]) & (rng < edges[k+1])
+        if not m.any():
+            continue                                  # empty bin -> no case
+        r_avg = np.average(rng[m],  weights=cnt[m])   # cycle-weighted averages
+        m_avg = np.average(mean[m], weights=cnt[m])
+        rows.append({
+            "set": set_name, "case": k + 1,
+            "F_min_N": max(m_avg - r_avg/2, 0.0),     # thrust can't go negative
+            "F_max_N": m_avg + r_avg/2,
+            "cycles_per_flight": cnt[m].sum(),
+            "cycles_n": cnt[m].sum() * FLIGHTS_PER_LIFE,
+        })
+
+spectrum = pd.DataFrame(rows)
+spectrum.to_csv("fatigue_spectrum.csv", index=False)
+print(spectrum.round(2).to_string(index=False))
+
+# ============================================================
+# CELL 5 — CalculiX setup: deck template + load normalization
+# Reads the FreeCAD .inp, measures its total applied force, and
+# defines write_deck(F) to rescale the load to exactly F Newtons.
+# NOTE: FreeCAD's face-force writer zeroes corner nodes, so the
+# CLOAD sum is NOT the value entered in the GUI — we normalize.
+# ============================================================
+from google.colab import files
+up = files.upload()                        # upload the FreeCAD .inp
+
+FEA = {
+    "template_inp": list(up.keys())[0],
+    "critical_nodes": [39968, 40011],      # hot-spot pair at root feature
+    "job": "run_case",                     # working job name
+}
+
+# Parse the CLOAD block once: (node, dof, value) entries
+deck = open(FEA["template_inp"]).read()
+m = re.search(r"(\*CLOAD\r?\n)(.*?)(?=\r?\n\*)", deck, re.S)
+entries = []
+for line in m.group(2).splitlines():
+    s = line.strip()
+    if s and not s.startswith("**"):
+        n, dof, v = s.split(",")
+        entries.append((int(n), int(dof), float(v)))
+
+total = sum(v for _, _, v in entries)      # signed sum (negative = -z thrust)
+print(f"CLOAD: {len(entries)} loaded nodes | deck total = {total:.6f} N")
+
+def write_deck(force_n):
+    """Write {job}.inp with the face load scaled to exactly force_n (N)."""
+    scale = force_n / abs(total)
+    block = "\n".join(f"{n},{dof},{v*scale:.12e}" for n, dof, v in entries)
+    new = deck[:m.start(2)] + block + deck[m.end(2):]
+    open(FEA["job"] + ".inp", "w").write(new)
+
+# ============================================================
+# CELL 6 — CalculiX execution: solve, parse, iterate spectrum
+# get_stress_ccx(F): write deck -> run ccx -> read sigma_1 (MPa)
+# at the critical nodes from the .frd results file.
+# ============================================================
+
+def principal_max(sxx, syy, szz, sxy, syz, szx):
+    """Max principal stress (signed) from the 6 tensor components."""
+    T = np.array([[sxx, sxy, szx], [sxy, syy, syz], [szx, syz, szz]])
+    return float(np.linalg.eigvalsh(T)[-1])
+
+def parse_frd_stress(frd_path, nodes):
+    """Nodal stress tensors from a CalculiX .frd (fixed-width format)."""
+    want, out, in_stress = set(nodes), {}, False
+    with open(frd_path) as f:
+        for line in f:
+            if line.startswith(" -4"):
+                in_stress = "STRESS" in line
+            elif in_stress and line.startswith(" -1"):
+                nid = int(line[3:13])
+                if nid in want:
+                    out[nid] = tuple(float(line[13+12*k : 25+12*k]) for k in range(6))
+            elif line.startswith(" -3"):
+                in_stress = False
+    return out
+
+def get_stress_ccx(force_n):
+    """FEA interface: worst signed sigma_1 (MPa) at the critical nodes for a
+    tip force of force_n (N). This is the swappable stress lookup."""
+    write_deck(force_n)
+    r = subprocess.run(["ccx", "-i", FEA["job"]], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("ccx failed:\n" + r.stdout[-500:])
+    tensors = parse_frd_stress(FEA["job"] + ".frd", FEA["critical_nodes"])
+    return max((principal_max(*t) for t in tensors.values()), key=abs)
+
+# --- Verification (run once): unit stress + linearity proof ---
+s_unit = get_stress_ccx(1.0)
+s_10x  = get_stress_ccx(10.0)
+print(f"sigma_unit = {s_unit:.4f} MPa/N | linearity: {s_10x/s_unit:.4f} (expect 10.0)")
+
+# --- Iterate the spectrum: solve F_max and F_min for every case ---
+USE_SOLVER_LOOP = True     # False -> fast path: sigma = F * s_unit (identical, no runs)
+
+if USE_SOLVER_LOOP:
+    smax, smin = [], []
+    for i, row in spectrum.iterrows():
+        smax.append(get_stress_ccx(row.F_max_N))
+        smin.append(get_stress_ccx(row.F_min_N) if row.F_min_N > 0 else 0.0)
+        print(f"[{i+1}/{len(spectrum)}] {row.set} c{int(row.case)}: "
+              f"smax={smax[-1]:.1f}  smin={smin[-1]:.1f} MPa")
+    spectrum["smax_MPa"], spectrum["smin_MPa"] = smax, smin
+else:
+    spectrum["smax_MPa"] = spectrum.F_max_N * s_unit
+    spectrum["smin_MPa"] = spectrum.F_min_N * s_unit
+
+# ============================================================
+# CELL 7 — Fatigue math: R -> S_eq -> N_f -> damage per case
+# S-N: 7075-T6, MIL-HDBK-5 style (stress in ksi):
+#   S_eq = S_max * (1 - R)^0.62
+#   log10(Nf) = 18.22 - 7.77 * log10(S_eq - 10.15)
+# S_eq below 10.15 ksi -> below threshold -> infinite life.
+# ============================================================
+SN = {"A": 18.22, "B": 7.77, "C": 10.15, "p": 0.62}
+MPA_TO_KSI = 1 / 6.895
+
+# Stress ratio (guard: pure-zero cases stay R = 0)
+spectrum["R"] = np.where(spectrum.smax_MPa > 0,
+                         spectrum.smin_MPa / spectrum.smax_MPa, 0.0)
+
+# Equivalent stress (mean stress correction), in ksi
+spectrum["Seq_ksi"] = spectrum.smax_MPa * MPA_TO_KSI * (1 - spectrum.R) ** SN["p"]
+
+# Fatigue life from S-N; below-threshold cases -> infinite
+above = spectrum.Seq_ksi > SN["C"]
+spectrum["Nf"] = np.where(
+    above,
+    10 ** (SN["A"] - SN["B"] * np.log10((spectrum.Seq_ksi - SN["C"]).clip(lower=1e-9))),
+    np.inf,
+)
+
+# Miner damage per case
+spectrum["damage"] = spectrum.cycles_n / spectrum.Nf
+
+spectrum.to_csv("fatigue_results.csv", index=False)
+cols = ["set", "case", "F_min_N", "F_max_N", "cycles_n", "R", "Seq_ksi", "Nf", "damage"]
+print(spectrum[cols].round(3).to_string(index=False))
+
+# ============================================================
+# CELL 8 — Miner's Rule: cumulative damage -> service life
+# D = sum(n_i / N_i) over all cases, per one design life.
+# D < 1 -> exceeds design life | D = 1 -> exactly | D > 1 -> fails early
+# ============================================================
+MISSION_MIN = flight.time_s.iloc[-1] / 60                 # one mission length
+LIFE_HOURS  = FLIGHTS_PER_LIFE * MISSION_MIN / 60         # one design life in hours
+
+D = spectrum.damage.sum()
+
+print("=" * 52)
+print(f"Cumulative Miner damage (one design life): D = {D:.4e}")
+
+if D > 0 and np.isfinite(D):
+    print(f"Service life = 1/D = {1/D:,.1f} design lives")
+    print(f"             = {LIFE_HOURS/D:,.0f} flight hours")
+    print(f"             = {FLIGHTS_PER_LIFE/D:,.0f} flights/landings")
+    verdict = "PASSES" if D < 1 else "FAILS"
+    print(f"\nPart {verdict} the {LIFE_HOURS:,.0f}-hour design life requirement.")
+else:
+    print("Service life: infinite — all stresses below fatigue threshold.")
+
+# Damage ranking: which cases consume the life
+top = spectrum[spectrum.damage > 0].sort_values("damage", ascending=False)
+top["pct_of_D"] = 100 * top.damage / D
+print("\nDamage drivers:")
+print(top[["set", "case", "Seq_ksi", "cycles_n", "damage", "pct_of_D"]]
+      .head(6).round(3).to_string(index=False))
+
+# ============================================================
+# CELL 9 — Visualization: the four-figure summary
+# 1 load history | 2 spectrum | 3 S-N curve + cases | 4 damage
+# ============================================================
+fig, ax = plt.subplots(2, 2, figsize=(14, 9))
+lab = spectrum.set + " c" + spectrum.case.astype(str)
+
+# 1 — What the structure experienced
+ax[0,0].plot(flight.time_s/60, flight.thrust_N, lw=0.4)
+ax[0,0].set(xlabel="Time (min)", ylabel="Thrust (N)",
+            title="Mission Load History")
+
+# 2 — What rainflow turned it into (cycles per case, log scale)
+ax[0,1].bar(lab, spectrum.cycles_n, color="steelblue")
+ax[0,1].set_yscale("log")
+ax[0,1].set(ylabel="Cycles per design life", title="Fatigue Load Spectrum")
+ax[0,1].tick_params(axis="x", rotation=60, labelsize=8)
+
+# 3 — Where each case sits on the S-N curve
+seq = np.linspace(SN["C"] + 0.1, 60, 200)
+nf  = 10 ** (SN["A"] - SN["B"] * np.log10(seq - SN["C"]))
+ax[1,0].plot(nf, seq, "k-", lw=1.5, label="7075-T6 S-N")
+fin = spectrum[np.isfinite(spectrum.Nf)]
+ax[1,0].scatter(fin.Nf, fin.Seq_ksi, c="firebrick", zorder=3, label="Load cases")
+ax[1,0]
+
